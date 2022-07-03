@@ -1,0 +1,10 @@
+displayName: Traefik GeoIP2
+
+summary: '[geoip2] Plugin for getting information from MaxMind GeoIP2 database and pass it to request headers.'
+
+type: middleware
+
+import: github.com/sopov/traefikgeoip2
+
+testData:
+  dbPath: 'GeoLite2-Country.mmdb'
