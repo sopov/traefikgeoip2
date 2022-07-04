@@ -3,13 +3,14 @@ package traefikgeoip2
 
 import (
 	"context"
-	"github.com/IncSW/geoip2"
 	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/IncSW/geoip2"
 )
 
 var (
@@ -27,7 +28,8 @@ type Config struct {
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *Config {
 	return &Config{
-		DBPath: DefaultDBPath,
+		LogLevel: DefaultLogLevel,
+		DBPath:   DefaultDBPath,
 	}
 }
 
@@ -40,7 +42,6 @@ type TraefikGeoIP2 struct {
 
 // New created a new TraefikGeoIP2 plugin.
 func New(ctx context.Context, next http.Handler, cfg *Config, name string) (http.Handler, error) {
-
 	switch strings.ToUpper(cfg.LogLevel) {
 	case "INFO":
 		logInfo.SetOutput(os.Stdout)
@@ -90,13 +91,9 @@ func New(ctx context.Context, next http.Handler, cfg *Config, name string) (http
 }
 
 func (mw *TraefikGeoIP2) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-
 	if mw.lookup == nil {
 		logWarn.Printf("Unable to lookup remoteAddr: %v, xRealIp: %v", req.RemoteAddr, req.Header.Get(RealIPHeader))
-		req.Header.Set(CountryHeader, Unknown)
-		req.Header.Set(RegionHeader, Unknown)
-		req.Header.Set(CityHeader, Unknown)
-		mw.next.ServeHTTP(rw, req)
+		mw.next.ServeHTTP(rw, mw.setGeoHeaders(req, &GeoIPResult{}))
 		return
 	}
 
@@ -109,27 +106,43 @@ func (mw *TraefikGeoIP2) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	res, err := mw.lookup(net.ParseIP(ipStr))
+	record, err := mw.lookup(net.ParseIP(ipStr))
 	if err != nil {
 		logWarn.Printf("Unable to find GeoIP data for `%s', %v", ipStr, err)
-		res = &GeoIPResult{
+		record = &GeoIPResult{
 			country: Unknown,
 			region:  Unknown,
 			city:    Unknown,
 		}
 	}
 
-	req.Header.Set(CountryHeader, res.country)
-	req.Header.Set(RegionHeader, res.region)
-	req.Header.Set(CityHeader, res.city)
-
 	logInfo.Printf("remoteAddr: %v, xRealIp: %v, Country: %v, Region: %v, City: %v",
 		req.RemoteAddr,
 		req.Header.Get(RealIPHeader),
-		res.country,
-		res.region,
-		res.city,
+		record.country,
+		record.region,
+		record.city,
 	)
 
-	mw.next.ServeHTTP(rw, req)
+	mw.next.ServeHTTP(rw, mw.setGeoHeaders(req, record))
+}
+
+func (mw *TraefikGeoIP2) setGeoHeaders(req *http.Request, record *GeoIPResult) *http.Request {
+	if record.country == "" {
+		record.country = Unknown
+	}
+
+	if record.region == "" {
+		record.region = Unknown
+	}
+
+	if record.city == "" {
+		record.city = Unknown
+	}
+
+	req.Header.Set(CountryHeader, record.country)
+	req.Header.Set(RegionHeader, record.region)
+	req.Header.Set(CityHeader, record.city)
+
+	return req
 }

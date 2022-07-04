@@ -13,6 +13,9 @@ const Unknown = "XX"
 // DefaultDBPath default GeoIP2 database path.
 const DefaultDBPath = "GeoLite2-Country.mmdb"
 
+// DefaultLogLevel default Level of errors.
+const DefaultLogLevel = "ERROR"
+
 const (
 	// RealIPHeader real ip header.
 	RealIPHeader = "X-Real-IP"
