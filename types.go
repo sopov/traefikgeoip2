@@ -3,6 +3,7 @@ package traefikgeoip2
 import (
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/IncSW/geoip2"
 )
@@ -15,6 +16,11 @@ const DefaultDBPath = "GeoLite2-Country.mmdb"
 
 // DefaultLogLevel default Level of errors.
 const DefaultLogLevel = "ERROR"
+
+const DefaultCacheExpire = 30 * time.Minute
+const DefaultCachePurge = 2 * time.Hour
+
+// DefaultCacheExpire is Default purges Time
 
 const (
 	// RealIPHeader real ip header.

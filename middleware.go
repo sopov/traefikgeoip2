@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/IncSW/geoip2"
+	"github.com/patrickmn/go-cache"
 )
 
 var (
@@ -38,6 +40,7 @@ type TraefikGeoIP2 struct {
 	next   http.Handler
 	lookup LookupGeoIP2
 	name   string
+	cache  *cache.Cache
 }
 
 // New created a new TraefikGeoIP2 plugin.
@@ -61,6 +64,7 @@ func New(ctx context.Context, next http.Handler, cfg *Config, name string) (http
 			lookup: nil,
 			next:   next,
 			name:   name,
+			cache:  nil,
 		}, nil
 	}
 
@@ -87,6 +91,7 @@ func New(ctx context.Context, next http.Handler, cfg *Config, name string) (http
 		lookup: lookup,
 		next:   next,
 		name:   name,
+		cache:  cache.New(DefaultCacheExpire, DefaultCachePurge),
 	}, nil
 }
 
@@ -97,6 +102,8 @@ func (mw *TraefikGeoIP2) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	var start = time.Now()
+
 	ipStr := req.Header.Get(RealIPHeader)
 	if ipStr == "" {
 		ipStr = req.RemoteAddr
@@ -106,22 +113,34 @@ func (mw *TraefikGeoIP2) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	record, err := mw.lookup(net.ParseIP(ipStr))
-	if err != nil {
-		logWarn.Printf("Unable to find GeoIP data for `%s', %v", ipStr, err)
-		record = &GeoIPResult{
-			country: Unknown,
-			region:  Unknown,
-			city:    Unknown,
+	var (
+		record *GeoIPResult
+		err    error
+	)
+
+	if c, found := mw.cache.Get(ipStr); found {
+		record = c.(*GeoIPResult)
+	} else {
+		record, err = mw.lookup(net.ParseIP(ipStr))
+		if err != nil {
+			logWarn.Printf("Unable to find GeoIP data for `%s', %v", ipStr, err)
+			record = &GeoIPResult{
+				country: Unknown,
+				region:  Unknown,
+				city:    Unknown,
+			}
 		}
+		mw.cache.Set(ipStr, record, cache.DefaultExpiration)
 	}
 
-	logInfo.Printf("remoteAddr: %v, xRealIp: %v, Country: %v, Region: %v, City: %v",
+	duration := time.Since(start)
+	logInfo.Printf("remoteAddr: %v, xRealIp: %v, Country: %v, Region: %v, City: %v, duration: %d µs",
 		req.RemoteAddr,
 		req.Header.Get(RealIPHeader),
 		record.country,
 		record.region,
 		record.city,
+		duration.Microseconds(),
 	)
 
 	mw.next.ServeHTTP(rw, mw.setGeoHeaders(req, record))
