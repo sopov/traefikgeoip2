@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/IncSW/geoip2"
 )
@@ -42,30 +43,55 @@ func New(ctx context.Context, next http.Handler, cfg *Config, name string) (http
 		}, nil
 	}
 
-	var lookup LookupGeoIP2
-	if strings.Contains(cfg.DBPath, "City") {
-		rdr, err := geoip2.NewCityReaderFromFile(cfg.DBPath)
-		if err != nil {
-			log.Printf("[geoip2] DB `%s' not initialized: %v", cfg.DBPath, err)
-		} else {
-			lookup = CreateCityDBLookup(rdr)
-		}
-	}
-
-	if strings.Contains(cfg.DBPath, "Country") {
-		rdr, err := geoip2.NewCountryReaderFromFile(cfg.DBPath)
-		if err != nil {
-			log.Printf("[geoip2] DB `%s' not initialized: %v", cfg.DBPath, err)
-		} else {
-			lookup = CreateCountryDBLookup(rdr)
-		}
-	}
-
 	return &TraefikGeoIP2{
-		lookup: lookup,
+		lookup: sharedLookup(cfg.DBPath),
 		next:   next,
 		name:   name,
 	}, nil
+}
+
+var (
+	lookupsMu sync.Mutex
+	lookups   = map[string]LookupGeoIP2{}
+)
+
+// sharedLookup loads each database once per process: Traefik calls New on every
+// dynamic configuration reload, and re-reading a City database (100+ MB) each time leaks memory.
+func sharedLookup(dbPath string) LookupGeoIP2 {
+	lookupsMu.Lock()
+	defer lookupsMu.Unlock()
+
+	if lookup, ok := lookups[dbPath]; ok {
+		return lookup
+	}
+
+	lookup := openLookup(dbPath)
+	if lookup != nil {
+		lookups[dbPath] = lookup
+	}
+	return lookup
+}
+
+func openLookup(dbPath string) LookupGeoIP2 {
+	if strings.Contains(dbPath, "City") {
+		rdr, err := geoip2.NewCityReaderFromFile(dbPath)
+		if err != nil {
+			log.Printf("[geoip2] DB `%s' not initialized: %v", dbPath, err)
+			return nil
+		}
+		return CreateCityDBLookup(rdr)
+	}
+
+	if strings.Contains(dbPath, "Country") {
+		rdr, err := geoip2.NewCountryReaderFromFile(dbPath)
+		if err != nil {
+			log.Printf("[geoip2] DB `%s' not initialized: %v", dbPath, err)
+			return nil
+		}
+		return CreateCountryDBLookup(rdr)
+	}
+
+	return nil
 }
 
 func (mw *TraefikGeoIP2) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
