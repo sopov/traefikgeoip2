@@ -7,4 +7,4 @@ type: middleware
 import: github.com/sopov/traefikgeoip2
 
 testData:
-  dbPath: 'GeoLite2-Country.mmdb'
+  dbPath: 'GeoLite2-City.mmdb'

@@ -54,6 +54,11 @@ func readTraitsMap(traits *Traits, buffer []byte, mapSize uint, offset uint) (ui
 			if err != nil {
 				return 0, err
 			}
+		case "is_anycast":
+			traits.IsAnycast, offset, err = readBool(buffer, offset)
+			if err != nil {
+				return 0, err
+			}
 		case "is_legitimate_proxy":
 			traits.IsLegitimateProxy, offset, err = readBool(buffer, offset)
 			if err != nil {

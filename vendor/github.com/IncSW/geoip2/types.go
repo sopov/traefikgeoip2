@@ -74,6 +74,7 @@ type Traits struct {
 	IsLegitimateProxy            bool    // Enterprise
 	IsAnonymousProxy             bool
 	IsSatelliteProvider          bool
+	IsAnycast                    bool
 }
 
 type CountryResult struct {

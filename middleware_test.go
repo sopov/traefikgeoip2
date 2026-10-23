@@ -137,6 +137,62 @@ func TestGeoIPFromXRealIP(t *testing.T) {
 	assertHeader(t, req, mw.CountryHeader, "DE")
 	assertHeader(t, req, mw.RegionHeader, "Bavaria")
 	assertHeader(t, req, mw.CityHeader, "Munich")
+	assertHeader(t, req, mw.TimezoneHeader, "Europe/Berlin")
+	assertHeader(t, req, mw.AnycastHeader, "false")
+	if req.Header.Get(mw.LatitudeHeader) == mw.Unknown || req.Header.Get(mw.LongitudeHeader) == mw.Unknown {
+		t.Fatalf("latitude/longitude not set: %s / %s", req.Header.Get(mw.LatitudeHeader), req.Header.Get(mw.LongitudeHeader))
+	}
+}
+
+// ASN test database from github.com/maxmind/MaxMind-DB (test-data): 1.128.0.0/11 → AS1221 Telstra.
+const asnTestDB = "./testdata/GeoLite2-ASN-Test.mmdb"
+
+func TestGeoIPASNDBFromRemoteAddr(t *testing.T) {
+	mwCfg := mw.CreateConfig()
+	mwCfg.DBPath = asnTestDB
+
+	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
+	instance, err := mw.New(context.TODO(), next, mwCfg, "traefik-geoip2-asn")
+	if err != nil {
+		t.Fatalf("Error creating %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
+	req.RemoteAddr = "1.128.0.1:9999"
+	req.Header.Set(mw.CountryHeader, "DE")
+	instance.ServeHTTP(httptest.NewRecorder(), req)
+	assertHeader(t, req, mw.ASNHeader, "1221")
+	assertHeader(t, req, mw.ASOrgHeader, "Telstra Pty Ltd")
+	// An ASN instance owns only its two headers: the chained geo instance's values survive.
+	assertHeader(t, req, mw.CountryHeader, "DE")
+	if req.Header.Get(mw.RegionHeader) != "" {
+		t.Fatalf("ASN instance must not set geo headers, got region %q", req.Header.Get(mw.RegionHeader))
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://localhost", nil)
+	req.RemoteAddr = "10.0.0.1:9999"
+	instance.ServeHTTP(httptest.NewRecorder(), req)
+	assertHeader(t, req, mw.ASNHeader, mw.Unknown)
+	assertHeader(t, req, mw.ASOrgHeader, mw.Unknown)
+}
+
+func TestMissingASNDBKeepsGeoHeaders(t *testing.T) {
+	mwCfg := mw.CreateConfig()
+	mwCfg.DBPath = "./testdata/GeoLite2-ASN-missing.mmdb"
+
+	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
+	instance, err := mw.New(context.TODO(), next, mwCfg, "traefik-geoip2-asn")
+	if err != nil {
+		t.Fatalf("Error creating %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
+	req.RemoteAddr = ValidIPAndPort
+	req.Header.Set(mw.CountryHeader, "DE")
+	instance.ServeHTTP(httptest.NewRecorder(), req)
+	assertHeader(t, req, mw.ASNHeader, mw.Unknown)
+	assertHeader(t, req, mw.ASOrgHeader, mw.Unknown)
+	assertHeader(t, req, mw.CountryHeader, "DE")
 }
 
 func assertHeader(t *testing.T, req *http.Request, key, expected string) {
