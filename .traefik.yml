@@ -7,4 +7,8 @@ type: middleware
 import: github.com/sopov/traefikgeoip2
 
 testData:
-  dbPath: 'GeoLite2-City.mmdb'
+  dbPath: 'testdata/GeoIP2-City-Test.mmdb'
+  logLevel: 'ERROR'
+  ipHeader: 'X-Real-IP'
+  cacheSize: 65536
+  cacheTTL: '30m'

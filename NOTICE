@@ -1,0 +1,21 @@
+Traefik GeoIP2 plugin (github.com/sopov/traefikgeoip2)
+
+This product is an independently maintained derivative of
+github.com/GiGInnovationLabs/traefikgeoip2 by GiG Innovation Labs, by way of
+the fork github.com/nuki-io/traefikgeoip2 by nuki-io. Both are licensed under
+the Apache License, Version 2.0, and were themselves started from the Traefik
+plugin template (Copyright 2020 Containous SAS, Copyright 2020 Traefik Labs),
+whose copyright line is retained in LICENSE.
+
+Modifications in this repository (middleware.go, types.go, registry.go,
+cache.go, clientip.go, logger.go, the tests, the build and CI files and the
+documentation) add database sharing and reloading, a bounded result cache, ASN
+database support, additional headers, configurable client-address handling and
+per-instance logging. See the git history for details.
+
+Third-party components:
+
+- github.com/IncSW/geoip2 (MIT), vendored with the modifications described in
+  patches/README.md; its licence is in vendor/github.com/IncSW/geoip2/LICENSE.
+- MaxMind test databases in testdata/ (Copyright MaxMind, Inc., Apache-2.0 or
+  MIT at your option); see testdata/README.md.
