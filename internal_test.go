@@ -337,3 +337,67 @@ func TestCacheEvictsLeastRecentlyUsed(t *testing.T) {
 func letters(i int) string {
 	return string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + string(rune('a'+(i/676)%26))
 }
+
+func TestParseClientAddr(t *testing.T) {
+	for raw, want := range map[string]string{
+		"1.2.3.4":                "1.2.3.4",
+		"1.2.3.4:80":             "1.2.3.4",
+		" 1.2.3.4 ":              "1.2.3.4",
+		"1.2.3.4, 5.6.7.8":       "1.2.3.4",
+		"2001:db8::1":            "2001:db8::1",
+		"[2001:db8::1]":          "2001:db8::1",
+		"[2001:db8::1]:443":      "2001:db8::1",
+		"::ffff:1.2.3.4":         "1.2.3.4",
+		"[::ffff:1.2.3.4]:443":   "1.2.3.4",
+		"fe80::1%eth0":           "fe80::1",
+		"[fe80::1%eth0]:1":       "fe80::1",
+		"2001:DB8:0:0:0:0:0:1":   "2001:db8::1",
+		"garbage":                "",
+		"":                       "",
+		",":                      "",
+		"1.2.3.4:notaport":       "1.2.3.4", // lenient: a malformed port does not lose the address
+		"300.1.1.1":              "",
+		"2001:db8::1:443":        "2001:db8::1:443", // ambiguous without brackets: parsed as an address
+		"unix:///var/run/x.sock": "",
+	} {
+		addr, ok := parseClientAddr(raw)
+		if want == "" {
+			if ok {
+				t.Errorf("%q: want failure, got %v", raw, addr)
+			}
+			continue
+		}
+		if !ok || addr.String() != want {
+			t.Errorf("%q: got %v/%v, want %s", raw, addr, ok, want)
+		}
+	}
+}
+
+func TestIsSpecial(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"10.0.0.1": true, "172.16.0.1": true, "192.168.1.1": true, "127.0.0.1": true, "0.0.0.0": true,
+		"169.254.1.1": true, "224.0.0.1": true, "::1": true, "::": true, "fe80::1": true, "fc00::1": true, "ff02::1": true,
+		"8.8.8.8": false, "81.2.69.160": false, "2001:218::1": false, "100.64.0.1": false,
+	} {
+		if got := isSpecial(netip.MustParseAddr(raw)); got != want {
+			t.Errorf("isSpecial(%s) = %v, want %v", raw, got, want)
+		}
+	}
+}
+
+func TestNormalizeIPHeader(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"", ""}, {"remoteaddr", ""}, {"RemoteAddr", ""}, {" x-real-ip ", "X-Real-Ip"},
+		{"X-Forwarded-For", "X-Forwarded-For"}, {"CF-Connecting-IP", "Cf-Connecting-Ip"},
+	} {
+		got, ok := normalizeIPHeader(tc.in)
+		if !ok || got != tc.want {
+			t.Errorf("normalizeIPHeader(%q) = %q/%v, want %q", tc.in, got, ok, tc.want)
+		}
+	}
+	for _, bad := range []string{"has space", "x:y", "a\nb"} {
+		if _, ok := normalizeIPHeader(bad); ok {
+			t.Errorf("normalizeIPHeader(%q) must fail", bad)
+		}
+	}
+}

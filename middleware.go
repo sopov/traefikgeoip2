@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -20,6 +19,11 @@ type Config struct {
 	DBPath string `json:"dbPath,omitempty"`
 	// LogLevel is ERROR (default), WARN, INFO or DEBUG.
 	LogLevel string `json:"logLevel,omitempty"`
+	// IPHeader is the request header the client address is read from, with
+	// RemoteAddr as fallback. Default X-Real-IP; X-Forwarded-For uses the first
+	// (client-most) element, which is only trustworthy when Traefik's entry point
+	// trusts the upstream proxy. Empty or "RemoteAddr" uses the TCP peer only.
+	IPHeader string `json:"ipHeader,omitempty"`
 	// CacheSize is the maximum number of cached lookup results per database;
 	// 0 disables the cache.
 	CacheSize int `json:"cacheSize,omitempty"`
@@ -32,6 +36,7 @@ func CreateConfig() *Config {
 	return &Config{
 		DBPath:    DefaultDBPath,
 		LogLevel:  DefaultLogLevel,
+		IPHeader:  RealIPHeader,
 		CacheSize: DefaultCacheSize,
 		CacheTTL:  DefaultCacheTTL,
 	}
@@ -40,11 +45,12 @@ func CreateConfig() *Config {
 // TraefikGeoIP2 is one middleware instance. Instances for the same database
 // path share its reader and cache through the registry.
 type TraefikGeoIP2 struct {
-	next http.Handler
-	name string
-	kind dbKind
-	db   *geoDB
-	log  *logger
+	next     http.Handler
+	name     string
+	kind     dbKind
+	ipHeader string
+	db       *geoDB
+	log      *logger
 }
 
 // New creates a middleware instance. Configuration errors are returned;
@@ -61,6 +67,10 @@ func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.H
 	if err != nil {
 		return nil, fmt.Errorf("geoip2: %w", err)
 	}
+	ipHeader, ok := normalizeIPHeader(cfg.IPHeader)
+	if !ok {
+		return nil, fmt.Errorf("geoip2: ipHeader %q is not a header name", cfg.IPHeader)
+	}
 	if cfg.CacheSize < 0 {
 		return nil, fmt.Errorf("geoip2: cacheSize must not be negative, got %d", cfg.CacheSize)
 	}
@@ -75,11 +85,12 @@ func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.H
 
 	db := sharedDB(cfg.DBPath, cacheSettings{size: cfg.CacheSize, ttl: ttl})
 	return &TraefikGeoIP2{
-		next: next,
-		name: name,
-		kind: db.kind,
-		db:   db,
-		log:  newLogger(level, name),
+		next:     next,
+		name:     name,
+		kind:     db.kind,
+		ipHeader: ipHeader,
+		db:       db,
+		log:      newLogger(level, name),
 	}, nil
 }
 
@@ -88,7 +99,8 @@ func (mw *TraefikGeoIP2) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	state := mw.db.current()
 	mw.db.maybeCheck(now)
 
-	addr, ok := clientAddr(req)
+	req = stripClientHeaders(req)
+	addr, ok := clientAddr(req, mw.ipHeader)
 	rec := mw.resolve(state, addr, ok, now)
 	mw.setHeaders(req.Header, rec)
 
@@ -102,7 +114,7 @@ func (mw *TraefikGeoIP2) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 // resolve returns the immutable result for addr: from the cache, from the
 // database, or unknownResult when no lookup is possible.
 func (mw *TraefikGeoIP2) resolve(state *dbState, addr netip.Addr, ok bool, now time.Time) *GeoIPResult {
-	if state.lookup == nil || !ok {
+	if state.lookup == nil || !ok || isSpecial(addr) {
 		return unknownResult
 	}
 	key := addr.String()
@@ -120,22 +132,6 @@ func (mw *TraefikGeoIP2) resolve(state *dbState, addr netip.Addr, ok bool, now t
 		state.cache.set(key, rec, now)
 	}
 	return rec
-}
-
-// clientAddr extracts the client address from X-Real-IP or RemoteAddr.
-func clientAddr(req *http.Request) (netip.Addr, bool) {
-	raw := req.Header.Get(RealIPHeader)
-	if raw == "" {
-		raw = req.RemoteAddr
-		if host, _, err := net.SplitHostPort(raw); err == nil {
-			raw = host
-		}
-	}
-	addr, err := netip.ParseAddr(raw)
-	if err != nil {
-		return netip.Addr{}, false
-	}
-	return addr.Unmap(), true
 }
 
 // setHeaders writes the headers this instance owns and leaves the other kind's
