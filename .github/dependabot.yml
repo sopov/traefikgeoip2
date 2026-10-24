@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # Dependency updates re-vendor without patches/; the Vendor consistency job
+  # and vendor_patch_test.go fail until `make vendor` is run on the branch.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /yaegitest
+    schedule:
+      interval: weekly

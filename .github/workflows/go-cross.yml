@@ -1,44 +1,30 @@
-name: Go Matrix
-on: [push, pull_request]
+name: Tests
+
+on:
+  push:
+    branches: [prod, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-
-  cross:
-    name: Go
-    runs-on: ${{ matrix.os }}
-    env:
-      CGO_ENABLED: 0
-
+  test:
+    name: Go ${{ matrix.go }}
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        go-version: [ 1.15, 1.x ]
-        os: [ubuntu-latest]
-
+        go: [stable, oldstable]
     steps:
-      # https://github.com/marketplace/actions/setup-go-environment
-      - name: Set up Go ${{ matrix.go-version }}
-        uses: actions/setup-go@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
-
-      # https://github.com/marketplace/actions/checkout
-      - name: Checkout code
-        uses: actions/checkout@v2
-
-      # https://github.com/marketplace/actions/cache
-      - name: Cache Go modules
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/go/pkg/mod              # Module download cache
-            ~/.cache/go-build         # Build cache (Linux)
-            ~/Library/Caches/go-build # Build cache (Mac)
-            '%LocalAppData%\go-build' # Build cache (Windows)
-          key: ${{ runner.os }}-${{ matrix.go-version }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.go-version }}-go-
-
-      - name: Test
-        run: |
-          make prepare
-          go test -v -cover ./...
+          go-version: ${{ matrix.go }}
+          check-latest: true
+      - run: go vet ./...
+      - run: go test -race -count=1 -cover ./...
