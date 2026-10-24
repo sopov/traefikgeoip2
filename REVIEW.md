@@ -13,61 +13,89 @@ Evidence gathered during the review (all outside the repository, nothing written
 
 Severity scale: blocker = must be fixed before this can be published or relied on; major = real production defect or risk; minor = defect with limited impact or a hardening item; note = observation, no action strictly required.
 
+## Fix phase
+
+The fix phase (commits after e574e66 on `prod`) addressed every blocker and major
+and the minors IP3, IP4, IP5, IP6, CA2, CA4, CF1, CF2, LI2, P5, CI6 that were
+asked for, plus P6 (go directive), which the vendor work required. The `status`
+column of the summary table records the outcome per finding; findings fixed as a
+side effect of another fix say so; everything else is listed under *Deferred* at
+the end. Y1 is *mitigated*, not fixed: the MaxMind decoder still runs interpreted,
+but every lookup result is cached in a bounded LRU, special addresses never reach
+the decoder, and the per-request path no longer formats log lines, so the
+interpreted cost is paid once per distinct public address per TTL.
+
+Decisions taken during the fix phase:
+
+- Header names are unchanged; `X-GeoIP2-Region` carries the ISO code.
+- `github.com/IncSW/geoip2` stays at v0.1.1. Its `unsafe` removal and the
+  `IsAnycast` addition are a patch file under `patches/`, applied by `make vendor`,
+  and `vendor_patch_test.go` fails when the vendored copy lacks it. The module
+  therefore still does not build with `-mod=mod` against the pristine dependency;
+  Traefik loads from `vendor/`, and the CI vendor job proves `make vendor`
+  reproduces the committed tree. The go directive is 1.21, the oldest version
+  Yaegi v0.16.1 (Traefik 3.7) supports.
+- `yaegi test` is replaced by `yaegitest/`, a separate module that loads the
+  plugin through the interpreter with vendored imports the way Traefik does; it
+  passes locally and runs in CI.
+- Workflows use `actions/checkout@v4` and `actions/setup-go@v5` as requested;
+  newer majors of both exist.
+
 ## Summary
 
-| id | severity | title | file:line |
-|----|----------|-------|-----------|
-| P1 | blocker | Module does not compile against its declared dependency; only the hand-patched vendor copy builds | go.mod:6, types.go:95, vendor/github.com/IncSW/geoip2/types.go:77 |
-| T1 | blocker | Three tests fail in every clean checkout: the City/Country databases are not in the repository and `make prepare` points to a file that does not exist | middleware_test.go:38, Makefile:8 |
-| CI1 | blocker | Both workflows use retired action versions (`actions/cache@v2`, `checkout@v2`, `setup-go@v2`) | .github/workflows/main.yml:29, .github/workflows/go-cross.yml:30 |
-| CI2 | blocker | Both workflows run `make prepare`, which fails, and then the tests, which fail without the databases | .github/workflows/main.yml:70, .github/workflows/go-cross.yml:43 |
-| C1 | major | Data race: `setGeoHeaders` writes into the shared cached `*GeoIPResult` while other requests read it | middleware.go:203-207, middleware.go:214-236 |
-| C2 | major | A database file updated on disk is never reloaded; the registry serves the first-loaded copy until Traefik restarts | middleware.go:95-109 |
-| IP1 | major | `X-Real-IP` is passed to `net.ParseIP` unprocessed: a port, bracket, zone or whitespace yields `XX` for every request | middleware.go:151-158, middleware.go:168 |
-| IP2 | major | No `X-Forwarded-For` support and no configurable source header; behind any upstream proxy or CDN the plugin geolocates the proxy | middleware.go:151 |
-| CA1 | major | Result cache has no size bound; growth is driven by the rate of distinct (including attacker-chosen) keys | middleware.go:177, types.go:22-23 |
-| Y1 | major | The MaxMind decoder runs interpreted: ~40x slower than compiled; every cache miss pays it | vendor/github.com/IncSW/geoip2/common.go, types.go:84-138 |
-| L1 | major | Log level is process-global, set by whichever instance ran `New` last, and can only be raised, never lowered | middleware.go:20-24, middleware.go:51-58 |
-| L2 | major | Silent failure at the default level: unrecognised file names and corrupt databases are logged at WARN or not at all, and every request then gets `XX` | middleware.go:111-140, middleware.go:143-147 |
-| T2 | major | Test suite misses the behaviours this branch added: shared registry, reload growth, cache, IPv6, header hygiene, concurrency | middleware_test.go |
-| D1 | major | Region header carries the English subdivision name; both upstreams emit the ISO code since v0.1.0 | types.go:98 |
-| P2 | major | The hand patch in vendor/ has no marker, no patch file and no test; `make vendor`, `make clean`, or any re-vendoring silently destroys it | Makefile:19-23, vendor/github.com/IncSW/geoip2/traits.go:57-61 |
-| P3 | major | README does not match the code or the repository (module path, version, Traefik 2 options, example names, build steps, options) | readme.md:16-23, readme.md:39-48, readme.md:70-73 |
-| LI1 | major | LICENSE attributes the work to Containous SAS / Traefik Labs; no NOTICE, no attribution to GiG Innovation Labs or nuki-io, no change notices | LICENSE:189-190, readme.md |
-| CI3 | major | `main.yml` triggers on pushes to `master`, a branch that does not exist | .github/workflows/main.yml:3-9 |
-| CI4 | major | Go 1.15 and golangci-lint v1.33.0 are pinned; the lint configuration uses removed linters and fails with current versions | .github/workflows/main.yml:17-18, .golangci.toml:31-45 |
-| CI5 | major | Yaegi v0.9.20 is pinned and `yaegi test -v .` cannot resolve vendored imports in any version | .github/workflows/main.yml:19, Makefile:17 |
-| C3 | minor | Registry is keyed by the raw path string and never released | middleware.go:99-107 |
-| C4 | minor | A database that fails to open is re-read in full on every `New` call | middleware.go:103-108 |
-| IP3 | minor | `X-Real-IP` is trusted unconditionally | middleware.go:151 |
-| IP4 | minor | IPv6 forms are not normalised: zones fail, mapped and bracketed forms produce distinct cache keys | middleware.go:151-158 |
-| IP5 | minor | Private, loopback and unspecified addresses are looked up and logged as failures | middleware.go:168-170 |
-| IP6 | minor | Client-supplied `X-GeoIP2-*` headers of the other kind pass through to backends | middleware.go:201-247 |
-| IP7 | minor | `kindOf` and `openLookup` disagree on paths containing more than one keyword; matching is case-sensitive | types.go:60-65, middleware.go:111-140 |
-| IP8 | minor | `X-GeoIP2-Anycast` is `false` when the lookup failed; non-ASCII city names are written raw into header values | middleware.go:244, types.go:93 |
-| CA2 | minor | Cache key is the raw, unnormalised header string; parse failures are cached | middleware.go:165, middleware.go:177 |
-| CA3 | minor | Cache TTL and purge interval are hard-coded; purge holds the write lock over the whole map | types.go:22-23, vendor/github.com/patrickmn/go-cache/cache.go:931 |
-| CA4 | minor | Unchecked type assertion on the cache value | middleware.go:166 |
-| CA5 | note | One `GeoIPResult` with nine strings is cached per key regardless of database kind | types.go:68-78 |
-| Y2 | minor | `log.Lshortfile` prints Yaegi's `restricted.go:51` for every line; timestamps duplicate Traefik's | middleware.go:21-23 |
-| Y3 | note | The `unsafe` removal in vendor is what lets Traefik load the plugin; upgrading IncSW/geoip2 reintroduces `unsafe`, Go 1.25 and Go 1.22 syntax | vendor/github.com/IncSW/geoip2/common.go:367-369 |
-| Y4 | note | go-cache's janitor goroutine and `runtime.SetFinalizer` work under Yaegi v0.16.1; the finalizer never fires by design | vendor/github.com/patrickmn/go-cache/cache.go:1113-1125 |
-| L3 | minor | Under Traefik, plugin stderr is logged at ERROR and stdout at DEBUG, so WARN lines appear as errors and INFO lines are invisible | middleware.go:53-58 |
-| L4 | minor | Per-request INFO line formats twelve fields and calls `time.Now` twice even when INFO is off | middleware.go:149, middleware.go:180-194 |
-| L5 | minor | `fmt.Errorf("%w", err)` adds no context; `New` never returns an error | types.go:88, types.go:113, types.go:130, middleware.go:50-80 |
-| CF1 | minor | `LogLevel` tagged `yaml:"loglevel"` while `DBPath` is tagged `json:"dbPath"`; values are not validated | middleware.go:28-29 |
-| CF2 | minor | Relative default path; `.traefik.yml` testData names a file that is not in the repository | types.go:17, .traefik.yml:9-10 |
-| CF3 | minor | Behavioural compatibility with upstream configs: same `dbPath`, different header values | types.go:98, types.go:27-48 |
-| T3 | minor | Tests depend on live GeoLite2 data for a real IP | middleware_test.go:13-14, middleware_test.go:97-99 |
-| T4 | minor | Tests share process-global state and only pass `-race` because they are sequential | middleware_test.go, middleware.go:88-91 |
-| T5 | note | Test database provenance is not pinned; the current upstream file differs | middleware_test.go:147, testdata/GeoLite2-ASN-Test.mmdb |
-| D2 | minor | Three divergent lines in one repository: `main` mirrors nuki-io, `prod` has an orphan root, `fix-shared-db-reader` has a test `prod` lacks | middleware.go:93-109 |
-| D3 | minor | Features in the GiG successor (`traefik-plugins/traefikgeoip2` v0.22.0) and in IncSW/geoip2 v0.1.2-v0.1.4 that `prod` does not have | middleware.go, go.mod:6 |
-| P4 | minor | Catalog readiness: no tag on `prod`; the only tag (v0.2.0) points at the old code; default-branch and topic requirements | .traefik.yml, go.mod:1 |
-| P5 | minor | Dockerfile and Makefile are broken (Traefik 2.4.8 base, nonexistent `geoip.go`, nonexistent `.gz`) | Dockerfile:1-4, Makefile:7-8 |
-| P6 | minor | `go 1.15` directive; raising it forces a re-vendor that collides with P1/P2 | go.mod:3, vendor/modules.txt |
-| LI2 | minor | Modified MIT file carries no notice; test database licence not stated | vendor/github.com/IncSW/geoip2/traits.go, testdata/ |
-| CI6 | minor | Workflow hygiene: wrong cache paths, no permissions block, no concurrency, no release workflow | .github/workflows/go-cross.yml:32-36 |
+| id | severity | status | title | file:line |
+|----|----------|--------|-------|-----------|
+| P1 | blocker | fixed | Module does not compile against its declared dependency; only the hand-patched vendor copy builds | go.mod:6, types.go:95, vendor/github.com/IncSW/geoip2/types.go:77 |
+| T1 | blocker | fixed | Three tests fail in every clean checkout: the City/Country databases are not in the repository and `make prepare` points to a file that does not exist | middleware_test.go:38, Makefile:8 |
+| CI1 | blocker | fixed | Both workflows use retired action versions (`actions/cache@v2`, `checkout@v2`, `setup-go@v2`) | .github/workflows/main.yml:29, .github/workflows/go-cross.yml:30 |
+| CI2 | blocker | fixed | Both workflows run `make prepare`, which fails, and then the tests, which fail without the databases | .github/workflows/main.yml:70, .github/workflows/go-cross.yml:43 |
+| C1 | major | fixed | Data race: `setGeoHeaders` writes into the shared cached `*GeoIPResult` while other requests read it | middleware.go:203-207, middleware.go:214-236 |
+| C2 | major | fixed | A database file updated on disk is never reloaded; the registry serves the first-loaded copy until Traefik restarts | middleware.go:95-109 |
+| IP1 | major | fixed | `X-Real-IP` is passed to `net.ParseIP` unprocessed: a port, bracket, zone or whitespace yields `XX` for every request | middleware.go:151-158, middleware.go:168 |
+| IP2 | major | fixed | No `X-Forwarded-For` support and no configurable source header; behind any upstream proxy or CDN the plugin geolocates the proxy | middleware.go:151 |
+| CA1 | major | fixed | Result cache has no size bound; growth is driven by the rate of distinct (including attacker-chosen) keys | middleware.go:177, types.go:22-23 |
+| Y1 | major | mitigated | The MaxMind decoder runs interpreted: ~40x slower than compiled; every cache miss pays it | vendor/github.com/IncSW/geoip2/common.go, types.go:84-138 |
+| L1 | major | fixed | Log level is process-global, set by whichever instance ran `New` last, and can only be raised, never lowered | middleware.go:20-24, middleware.go:51-58 |
+| L2 | major | fixed | Silent failure at the default level: unrecognised file names and corrupt databases are logged at WARN or not at all, and every request then gets `XX` | middleware.go:111-140, middleware.go:143-147 |
+| T2 | major | fixed | Test suite misses the behaviours this branch added: shared registry, reload growth, cache, IPv6, header hygiene, concurrency | middleware_test.go |
+| D1 | major | fixed | Region header carries the English subdivision name; both upstreams emit the ISO code since v0.1.0 | types.go:98 |
+| P2 | major | fixed | The hand patch in vendor/ has no marker, no patch file and no test; `make vendor`, `make clean`, or any re-vendoring silently destroys it | Makefile:19-23, vendor/github.com/IncSW/geoip2/traits.go:57-61 |
+| P3 | major | fixed | README does not match the code or the repository (module path, version, Traefik 2 options, example names, build steps, options) | readme.md:16-23, readme.md:39-48, readme.md:70-73 |
+| LI1 | major | fixed | LICENSE attributes the work to Containous SAS / Traefik Labs; no NOTICE, no attribution to GiG Innovation Labs or nuki-io, no change notices | LICENSE:189-190, readme.md |
+| CI3 | major | fixed | `main.yml` triggers on pushes to `master`, a branch that does not exist | .github/workflows/main.yml:3-9 |
+| CI4 | major | fixed | Go 1.15 and golangci-lint v1.33.0 are pinned; the lint configuration uses removed linters and fails with current versions | .github/workflows/main.yml:17-18, .golangci.toml:31-45 |
+| CI5 | major | fixed | Yaegi v0.9.20 is pinned and `yaegi test -v .` cannot resolve vendored imports in any version | .github/workflows/main.yml:19, Makefile:17 |
+| C3 | minor | deferred | Registry is keyed by the raw path string and never released | middleware.go:99-107 |
+| C4 | minor | fixed (side effect of C2) | A database that fails to open is re-read in full on every `New` call | middleware.go:103-108 |
+| IP3 | minor | fixed | `X-Real-IP` is trusted unconditionally | middleware.go:151 |
+| IP4 | minor | fixed | IPv6 forms are not normalised: zones fail, mapped and bracketed forms produce distinct cache keys | middleware.go:151-158 |
+| IP5 | minor | fixed | Private, loopback and unspecified addresses are looked up and logged as failures | middleware.go:168-170 |
+| IP6 | minor | fixed | Client-supplied `X-GeoIP2-*` headers of the other kind pass through to backends | middleware.go:201-247 |
+| IP7 | minor | deferred (reader/kind precedence unified; case-sensitive matching remains) | `kindOf` and `openLookup` disagree on paths containing more than one keyword; matching is case-sensitive | types.go:60-65, middleware.go:111-140 |
+| IP8 | minor | deferred | `X-GeoIP2-Anycast` is `false` when the lookup failed; non-ASCII city names are written raw into header values | middleware.go:244, types.go:93 |
+| CA2 | minor | fixed | Cache key is the raw, unnormalised header string; parse failures are cached | middleware.go:165, middleware.go:177 |
+| CA3 | minor | fixed (side effect of CA1) | Cache TTL and purge interval are hard-coded; purge holds the write lock over the whole map | types.go:22-23, vendor/github.com/patrickmn/go-cache/cache.go:931 |
+| CA4 | minor | fixed | Unchecked type assertion on the cache value | middleware.go:166 |
+| CA5 | note | deferred | One `GeoIPResult` with nine strings is cached per key regardless of database kind | types.go:68-78 |
+| Y2 | minor | fixed (side effect of L1) | `log.Lshortfile` prints Yaegi's `restricted.go:51` for every line; timestamps duplicate Traefik's | middleware.go:21-23 |
+| Y3 | note | deferred | The `unsafe` removal in vendor is what lets Traefik load the plugin; upgrading IncSW/geoip2 reintroduces `unsafe`, Go 1.25 and Go 1.22 syntax | vendor/github.com/IncSW/geoip2/common.go:367-369 |
+| Y4 | note | deferred | go-cache's janitor goroutine and `runtime.SetFinalizer` work under Yaegi v0.16.1; the finalizer never fires by design | vendor/github.com/patrickmn/go-cache/cache.go:1113-1125 |
+| L3 | minor | deferred | Under Traefik, plugin stderr is logged at ERROR and stdout at DEBUG, so WARN lines appear as errors and INFO lines are invisible | middleware.go:53-58 |
+| L4 | minor | fixed (side effect of L1) | Per-request INFO line formats twelve fields and calls `time.Now` twice even when INFO is off | middleware.go:149, middleware.go:180-194 |
+| L5 | minor | deferred (errors now carry context; databases stay non-fatal by design) | `fmt.Errorf("%w", err)` adds no context; `New` never returns an error | types.go:88, types.go:113, types.go:130, middleware.go:50-80 |
+| CF1 | minor | fixed | `LogLevel` tagged `yaml:"loglevel"` while `DBPath` is tagged `json:"dbPath"`; values are not validated | middleware.go:28-29 |
+| CF2 | minor | fixed | Relative default path; `.traefik.yml` testData names a file that is not in the repository | types.go:17, .traefik.yml:9-10 |
+| CF3 | minor | deferred | Behavioural compatibility with upstream configs: same `dbPath`, different header values | types.go:98, types.go:27-48 |
+| T3 | minor | fixed (side effect of T1) | Tests depend on live GeoLite2 data for a real IP | middleware_test.go:13-14, middleware_test.go:97-99 |
+| T4 | minor | fixed (side effect of L1 and T2) | Tests share process-global state and only pass `-race` because they are sequential | middleware_test.go, middleware.go:88-91 |
+| T5 | note | fixed (side effect of T1) | Test database provenance is not pinned; the current upstream file differs | middleware_test.go:147, testdata/GeoLite2-ASN-Test.mmdb |
+| D2 | minor | deferred | Three divergent lines in one repository: `main` mirrors nuki-io, `prod` has an orphan root, `fix-shared-db-reader` has a test `prod` lacks | middleware.go:93-109 |
+| D3 | minor | deferred | Features in the GiG successor (`traefik-plugins/traefikgeoip2` v0.22.0) and in IncSW/geoip2 v0.1.2-v0.1.4 that `prod` does not have | middleware.go, go.mod:6 |
+| P4 | minor | deferred | Catalog readiness: no tag on `prod`; the only tag (v0.2.0) points at the old code; default-branch and topic requirements | .traefik.yml, go.mod:1 |
+| P5 | minor | fixed | Dockerfile and Makefile are broken (Traefik 2.4.8 base, nonexistent `geoip.go`, nonexistent `.gz`) | Dockerfile:1-4, Makefile:7-8 |
+| P6 | minor | fixed | `go 1.15` directive; raising it forces a re-vendor that collides with P1/P2 | go.mod:3, vendor/modules.txt |
+| LI2 | minor | fixed | Modified MIT file carries no notice; test database licence not stated | vendor/github.com/IncSW/geoip2/traits.go, testdata/ |
+| CI6 | minor | fixed | Workflow hygiene: wrong cache paths, no permissions block, no concurrency, no release workflow | .github/workflows/go-cross.yml:32-36 |
 
 ## 1. Concurrency and lifecycle
 
@@ -500,7 +528,7 @@ Cache paths list macOS and Windows directories for an ubuntu-only matrix; no top
 7. Replace `yaegi test` with an interp-based Go test or a local-plugin Traefik run (CI5).
 8. Add `go test -race ./...` and a `-mod=mod` compile check (T4, P1).
 
-## Appendix: verbatim tool output
+## Appendix: verbatim tool output before the fix phase
 
 Go toolchain: `go version go1.24.7 linux/amd64`.
 
@@ -526,4 +554,32 @@ FAIL
 FAIL	github.com/sopov/traefikgeoip2	0.005s
 FAIL
 exit status: 1
+```
+
+## Deferred
+
+Left untouched in the fix phase, by decision:
+
+- C3 Registry keyed by the raw path string and never released.
+- IP7 Kind detection by case-sensitive substring (the reader and header kind now follow one precedence: City, Country, ASN).
+- IP8 `X-GeoIP2-Anycast` is `false` on failure; non-ASCII names in header values.
+- CA5 One `GeoIPResult` shape for all database kinds.
+- Y3 The `unsafe` removal is load-bearing; upgrading IncSW/geoip2 needs an interpreter test.
+- Y4 Notes on go-cache under Yaegi (go-cache is no longer used).
+- L3 stderr/stdout mapping to Traefik log levels (documented in the README instead).
+- L5 `New` never fails for database problems (kept by design and documented); lookup errors now carry context.
+- CF3 Migration table for upstream header semantics (`X-GeoIP2-CountryName`, `X-GeoIP2-IPAddress` are not provided).
+- D2 Three divergent lines in the repository (`main`, `prod`, `fix-shared-db-reader`).
+- D3 Features of the traefik-plugins successor and of IncSW/geoip2 v0.1.2-v0.1.4.
+- P4 Catalog readiness: tagging `prod` above v0.2.0, default branch and repository topic.
+
+## Appendix: verbatim tool output after the fix phase
+
+```
+$ go vet ./...
+exit status: 0
+
+$ go test -race -count=1 ./...
+ok  	github.com/sopov/traefikgeoip2	1.105s
+exit status: 0
 ```
