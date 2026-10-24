@@ -9,187 +9,184 @@ import (
 	mw "github.com/sopov/traefikgeoip2"
 )
 
+// Databases from github.com/maxmind/MaxMind-DB test-data; see testdata/README.md
+// for the pinned commit and the expected values.
 const (
-	ValidIP        = "188.193.88.199"
-	ValidIPAndPort = "188.193.88.199:9999"
+	cityDB    = "./testdata/GeoIP2-City-Test.mmdb"
+	countryDB = "./testdata/GeoIP2-Country-Test.mmdb"
+	asnDB     = "./testdata/GeoLite2-ASN-Test.mmdb"
 )
 
-func TestGeoIPConfig(t *testing.T) {
-	mwCfg := mw.CreateConfig()
-	if mw.DefaultDBPath != mwCfg.DBPath {
-		t.Fatalf("Incorrect path")
-	}
-
-	mwCfg.DBPath = "./non-existing"
-	_, err := mw.New(context.TODO(), nil, mwCfg, "")
+func newInstance(t *testing.T, dbPath string, called *bool) http.Handler {
+	t.Helper()
+	cfg := mw.CreateConfig()
+	cfg.DBPath = dbPath
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		if called != nil {
+			*called = true
+		}
+	})
+	instance, err := mw.New(context.Background(), next, cfg, "traefik-geoip2")
 	if err != nil {
-		t.Fatalf("Must not fail on missing DB")
+		t.Fatalf("New(%s): %v", dbPath, err)
 	}
-
-	mwCfg.DBPath = "Makefile"
-	_, err = mw.New(context.TODO(), nil, mwCfg, "")
-	if err != nil {
-		t.Fatalf("Must not fail on invalid DB format")
-	}
+	return instance
 }
 
-func TestGeoIPBasic(t *testing.T) {
-	mwCfg := mw.CreateConfig()
-	mwCfg.DBPath = "./GeoLite2-City.mmdb"
+func serve(t *testing.T, h http.Handler, remoteAddr string, headers map[string]string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost", nil)
+	req.RemoteAddr = remoteAddr
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Result().StatusCode != http.StatusOK { //nolint:bodyclose // recorder result carries no body to close
+		t.Fatalf("unexpected status %d", rec.Result().StatusCode)
+	}
+	return req
+}
 
-	called := false
-	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) { called = true })
-
-	instance, err := mw.New(context.TODO(), next, mwCfg, "traefik-geoip2")
-	if err != nil {
-		t.Fatalf("Error creating %v", err)
+func TestGeoIPConfig(t *testing.T) {
+	cfg := mw.CreateConfig()
+	if cfg.DBPath != mw.DefaultDBPath {
+		t.Fatalf("default dbPath %q, want %q", cfg.DBPath, mw.DefaultDBPath)
 	}
 
-	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
-
-	instance.ServeHTTP(recorder, req)
-	if recorder.Result().StatusCode != http.StatusOK {
-		t.Fatalf("Invalid return code")
+	cfg.DBPath = "./non-existing"
+	if _, err := mw.New(context.Background(), nil, cfg, ""); err != nil {
+		t.Fatalf("must not fail on missing DB: %v", err)
 	}
-	if called != true {
-		t.Fatalf("next handler was not called")
+
+	cfg.DBPath = "Makefile"
+	if _, err := mw.New(context.Background(), nil, cfg, ""); err != nil {
+		t.Fatalf("must not fail on invalid DB format: %v", err)
 	}
 }
 
 func TestMissingGeoIPDB(t *testing.T) {
-	mwCfg := mw.CreateConfig()
-	mwCfg.DBPath = "./missing"
-
 	called := false
-	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) { called = true })
-
-	instance, err := mw.New(context.TODO(), next, mwCfg, "traefik-geoip2")
-	if err != nil {
-		t.Fatalf("Error creating %v", err)
-	}
-
-	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
-
-	instance.ServeHTTP(recorder, req)
-	if recorder.Result().StatusCode != http.StatusOK {
-		t.Fatalf("Invalid return code")
-	}
-	if called != true {
-		t.Fatalf("next handler was not called")
+	instance := newInstance(t, "./missing-City.mmdb", &called)
+	req := serve(t, instance, "81.2.69.160:9999", nil)
+	if !called {
+		t.Fatal("next handler was not called")
 	}
 	assertHeader(t, req, mw.CountryHeader, mw.Unknown)
 	assertHeader(t, req, mw.RegionHeader, mw.Unknown)
 	assertHeader(t, req, mw.CityHeader, mw.Unknown)
+	assertHeader(t, req, mw.TimezoneHeader, mw.Unknown)
+	assertHeader(t, req, mw.LatitudeHeader, mw.Unknown)
+	assertHeader(t, req, mw.LongitudeHeader, mw.Unknown)
 }
 
-func TestGeoIPFromRemoteAddr(t *testing.T) {
-	mwCfg := mw.CreateConfig()
-	mwCfg.DBPath = "./GeoLite2-City.mmdb"
+func TestCityDBFromRemoteAddr(t *testing.T) {
+	called := false
+	instance := newInstance(t, cityDB, &called)
 
-	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
-	instance, _ := mw.New(context.TODO(), next, mwCfg, "traefik-geoip2")
-
-	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
-	req.RemoteAddr = ValidIPAndPort
-	instance.ServeHTTP(httptest.NewRecorder(), req)
-	assertHeader(t, req, mw.CountryHeader, "DE")
-	assertHeader(t, req, mw.RegionHeader, "Bavaria")
-	assertHeader(t, req, mw.CityHeader, "Munich")
-
-	req = httptest.NewRequest(http.MethodGet, "http://localhost", nil)
-	req.RemoteAddr = "qwerty:9999"
-	instance.ServeHTTP(httptest.NewRecorder(), req)
-	assertHeader(t, req, mw.CountryHeader, mw.Unknown)
-	assertHeader(t, req, mw.RegionHeader, mw.Unknown)
-	assertHeader(t, req, mw.CityHeader, mw.Unknown)
-}
-
-func TestGeoIPCountryDBFromRemoteAddr(t *testing.T) {
-	mwCfg := mw.CreateConfig()
-	mwCfg.DBPath = "./GeoLite2-Country.mmdb"
-
-	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
-	instance, _ := mw.New(context.TODO(), next, mwCfg, "traefik-geoip2")
-
-	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
-	req.RemoteAddr = ValidIPAndPort
-	instance.ServeHTTP(httptest.NewRecorder(), req)
-
-	assertHeader(t, req, mw.CountryHeader, "DE")
-	assertHeader(t, req, mw.RegionHeader, mw.Unknown)
-	assertHeader(t, req, mw.CityHeader, mw.Unknown)
-}
-
-func TestGeoIPFromXRealIP(t *testing.T) {
-	mwCfg := mw.CreateConfig()
-	mwCfg.DBPath = "./GeoLite2-City.mmdb"
-
-	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
-	instance, _ := mw.New(context.Background(), next, mwCfg, "traefik-geoip2")
-
-	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
-	req.RemoteAddr = "1.1.1.1:9999"
-	req.Header.Set("X-Real-Ip", ValidIP)
-
-	instance.ServeHTTP(httptest.NewRecorder(), req)
-	assertHeader(t, req, mw.CountryHeader, "DE")
-	assertHeader(t, req, mw.RegionHeader, "Bavaria")
-	assertHeader(t, req, mw.CityHeader, "Munich")
-	assertHeader(t, req, mw.TimezoneHeader, "Europe/Berlin")
+	req := serve(t, instance, "81.2.69.160:9999", nil)
+	if !called {
+		t.Fatal("next handler was not called")
+	}
+	assertHeader(t, req, mw.CountryHeader, "GB")
+	assertHeader(t, req, mw.RegionHeader, "ENG")
+	assertHeader(t, req, mw.CityHeader, "London")
+	assertHeader(t, req, mw.TimezoneHeader, "Europe/London")
+	assertHeader(t, req, mw.LatitudeHeader, "51.5142")
+	assertHeader(t, req, mw.LongitudeHeader, "-0.0931")
 	assertHeader(t, req, mw.AnycastHeader, "false")
-	if req.Header.Get(mw.LatitudeHeader) == mw.Unknown || req.Header.Get(mw.LongitudeHeader) == mw.Unknown {
-		t.Fatalf("latitude/longitude not set: %s / %s", req.Header.Get(mw.LatitudeHeader), req.Header.Get(mw.LongitudeHeader))
-	}
+
+	// Non-ASCII city name, RemoteAddr without a port.
+	req = serve(t, instance, "89.160.20.112", nil)
+	assertHeader(t, req, mw.CountryHeader, "SE")
+	assertHeader(t, req, mw.RegionHeader, "E")
+	assertHeader(t, req, mw.CityHeader, "Linköping")
+
+	// Unparsable RemoteAddr.
+	req = serve(t, instance, "qwerty:9999", nil)
+	assertHeader(t, req, mw.CountryHeader, mw.Unknown)
+	assertHeader(t, req, mw.RegionHeader, mw.Unknown)
+	assertHeader(t, req, mw.CityHeader, mw.Unknown)
 }
 
-// ASN test database from github.com/maxmind/MaxMind-DB (test-data): 1.128.0.0/11 → AS1221 Telstra.
-const asnTestDB = "./testdata/GeoLite2-ASN-Test.mmdb"
+func TestCityDBIPv6(t *testing.T) {
+	instance := newInstance(t, cityDB, nil)
 
-func TestGeoIPASNDBFromRemoteAddr(t *testing.T) {
-	mwCfg := mw.CreateConfig()
-	mwCfg.DBPath = asnTestDB
+	req := serve(t, instance, "[2001:218::1]:443", nil)
+	assertHeader(t, req, mw.CountryHeader, "JP")
+	assertHeader(t, req, mw.RegionHeader, mw.Unknown)
+	assertHeader(t, req, mw.CityHeader, mw.Unknown)
+	assertHeader(t, req, mw.TimezoneHeader, "Asia/Tokyo")
 
-	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
-	instance, err := mw.New(context.TODO(), next, mwCfg, "traefik-geoip2-asn")
-	if err != nil {
-		t.Fatalf("Error creating %v", err)
-	}
+	req = serve(t, instance, "2001:218::1", nil)
+	assertHeader(t, req, mw.CountryHeader, "JP")
+}
 
-	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
-	req.RemoteAddr = "1.128.0.1:9999"
-	req.Header.Set(mw.CountryHeader, "DE")
-	instance.ServeHTTP(httptest.NewRecorder(), req)
+func TestCityDBAnycast(t *testing.T) {
+	instance := newInstance(t, cityDB, nil)
+	req := serve(t, instance, "214.1.1.1:1", nil)
+	assertHeader(t, req, mw.AnycastHeader, "true")
+	assertHeader(t, req, mw.CountryHeader, mw.Unknown)
+}
+
+func TestCountryDBFromRemoteAddr(t *testing.T) {
+	instance := newInstance(t, countryDB, nil)
+
+	req := serve(t, instance, "81.2.69.142:9999", nil)
+	assertHeader(t, req, mw.CountryHeader, "GB")
+	assertHeader(t, req, mw.RegionHeader, mw.Unknown)
+	assertHeader(t, req, mw.CityHeader, mw.Unknown)
+	assertHeader(t, req, mw.TimezoneHeader, mw.Unknown)
+	assertHeader(t, req, mw.LatitudeHeader, mw.Unknown)
+	assertHeader(t, req, mw.LongitudeHeader, mw.Unknown)
+	assertHeader(t, req, mw.AnycastHeader, "false")
+
+	req = serve(t, instance, "[2001:218::1]:1", nil)
+	assertHeader(t, req, mw.CountryHeader, "JP")
+
+	req = serve(t, instance, "214.1.1.1:1", nil)
+	assertHeader(t, req, mw.AnycastHeader, "true")
+}
+
+func TestCityDBFromXRealIP(t *testing.T) {
+	instance := newInstance(t, cityDB, nil)
+	req := serve(t, instance, "1.1.1.1:9999", map[string]string{"X-Real-Ip": "81.2.69.160"})
+	assertHeader(t, req, mw.CountryHeader, "GB")
+	assertHeader(t, req, mw.RegionHeader, "ENG")
+	assertHeader(t, req, mw.CityHeader, "London")
+}
+
+func TestASNDBFromRemoteAddr(t *testing.T) {
+	instance := newInstance(t, asnDB, nil)
+
+	req := serve(t, instance, "1.128.0.1:9999", map[string]string{mw.CountryHeader: "DE"})
 	assertHeader(t, req, mw.ASNHeader, "1221")
 	assertHeader(t, req, mw.ASOrgHeader, "Telstra Pty Ltd")
-	// An ASN instance owns only its two headers: the chained geo instance's values survive.
+	// An ASN instance owns only its two headers: a chained geo instance's values survive.
 	assertHeader(t, req, mw.CountryHeader, "DE")
 	if req.Header.Get(mw.RegionHeader) != "" {
 		t.Fatalf("ASN instance must not set geo headers, got region %q", req.Header.Get(mw.RegionHeader))
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "http://localhost", nil)
-	req.RemoteAddr = "10.0.0.1:9999"
-	instance.ServeHTTP(httptest.NewRecorder(), req)
+	// Number without organization.
+	req = serve(t, instance, "216.160.83.56:1", nil)
+	assertHeader(t, req, mw.ASNHeader, "209")
+	assertHeader(t, req, mw.ASOrgHeader, mw.Unknown)
+
+	// IPv6.
+	req = serve(t, instance, "[2600:1000::1]:1", nil)
+	assertHeader(t, req, mw.ASNHeader, "237")
+	assertHeader(t, req, mw.ASOrgHeader, "Merit Network Inc.")
+
+	// Not in the database.
+	req = serve(t, instance, "10.0.0.1:9999", nil)
 	assertHeader(t, req, mw.ASNHeader, mw.Unknown)
 	assertHeader(t, req, mw.ASOrgHeader, mw.Unknown)
 }
 
 func TestMissingASNDBKeepsGeoHeaders(t *testing.T) {
-	mwCfg := mw.CreateConfig()
-	mwCfg.DBPath = "./testdata/GeoLite2-ASN-missing.mmdb"
-
-	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
-	instance, err := mw.New(context.TODO(), next, mwCfg, "traefik-geoip2-asn")
-	if err != nil {
-		t.Fatalf("Error creating %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
-	req.RemoteAddr = ValidIPAndPort
-	req.Header.Set(mw.CountryHeader, "DE")
-	instance.ServeHTTP(httptest.NewRecorder(), req)
+	instance := newInstance(t, "./testdata/GeoLite2-ASN-missing.mmdb", nil)
+	req := serve(t, instance, "1.128.0.1:9999", map[string]string{mw.CountryHeader: "DE"})
 	assertHeader(t, req, mw.ASNHeader, mw.Unknown)
 	assertHeader(t, req, mw.ASOrgHeader, mw.Unknown)
 	assertHeader(t, req, mw.CountryHeader, "DE")
@@ -197,7 +194,7 @@ func TestMissingASNDBKeepsGeoHeaders(t *testing.T) {
 
 func assertHeader(t *testing.T, req *http.Request, key, expected string) {
 	t.Helper()
-	if req.Header.Get(key) != expected {
-		t.Fatalf("invalid value of header [%s] != %s", key, req.Header.Get(key))
+	if got := req.Header.Get(key); got != expected {
+		t.Fatalf("header %s = %q, want %q", key, got, expected)
 	}
 }

@@ -95,7 +95,7 @@ func CreateCityDBLookup(rdr *geoip2.CityReader) LookupGeoIP2 {
 			anycast:  rec.Traits.IsAnycast,
 		}
 		if rec.Subdivisions != nil {
-			retval.region = rec.Subdivisions[0].Names["en"]
+			retval.region = rec.Subdivisions[0].ISOCode
 		}
 		if rec.Location.Latitude != 0 || rec.Location.Longitude != 0 {
 			retval.latitude = strconv.FormatFloat(rec.Location.Latitude, 'f', -1, 64)
