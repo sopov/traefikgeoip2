@@ -1,23 +1,20 @@
-.PHONY: lint test vendor clean
-
-export GO111MODULE=on
+.PHONY: default lint test vendor clean
 
 default: lint test
 
-prepare:
-	gunzip -kf GeoLite2-City.mmdb.gz
-	
 lint:
 	golangci-lint run
 
 test:
-	go test -v -cover ./...
+	go test -race -count=1 -cover ./...
 
 yaegi_test:
 	yaegi test -v .	
 
+# Re-vendor dependencies and re-apply the patches documented in patches/README.md.
 vendor:
 	go mod vendor
+	for p in patches/*.patch; do patch -p1 < $$p; done
 
 clean:
-	rm -rf ./vendor
+	go clean -testcache

@@ -1,3 +1,5 @@
+// Modified from github.com/IncSW/geoip2 v0.1.1 for github.com/sopov/traefikgeoip2 (MIT, see LICENSE in this directory).
+// Change: Traits.IsAnycast field.
 package geoip2
 
 const (

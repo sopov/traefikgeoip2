@@ -1,3 +1,6 @@
+// Modified from github.com/IncSW/geoip2 v0.1.1 for github.com/sopov/traefikgeoip2 (MIT, see LICENSE in this directory).
+// Change: b2s copies the bytes instead of using unsafe.Pointer, so the package loads
+// under Traefik's Yaegi interpreter without the useUnsafe setting.
 package geoip2
 
 import (

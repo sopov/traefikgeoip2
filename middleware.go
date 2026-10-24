@@ -3,7 +3,7 @@ package traefikgeoip2
 
 import (
 	"context"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -18,9 +18,9 @@ import (
 )
 
 var (
-	logInfo = log.New(ioutil.Discard, "geoip2-", log.Ldate|log.Ltime|log.Lshortfile)
-	logWarn = log.New(ioutil.Discard, "geoip2-", log.Ldate|log.Ltime|log.Lshortfile)
-	logErr  = log.New(ioutil.Discard, "geoip2-", log.Ldate|log.Ltime|log.Lshortfile)
+	logInfo = log.New(io.Discard, "geoip2-", log.Ldate|log.Ltime|log.Lshortfile)
+	logWarn = log.New(io.Discard, "geoip2-", log.Ldate|log.Ltime|log.Lshortfile)
+	logErr  = log.New(io.Discard, "geoip2-", log.Ldate|log.Ltime|log.Lshortfile)
 )
 
 // Config the plugin configuration.

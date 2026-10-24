@@ -35,7 +35,10 @@ func newInstance(t *testing.T, dbPath string, called *bool) http.Handler {
 
 func serve(t *testing.T, h http.Handler, remoteAddr string, headers map[string]string) *http.Request {
 	t.Helper()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
 	req.RemoteAddr = remoteAddr
 	for k, v := range headers {
 		req.Header.Set(k, v)
