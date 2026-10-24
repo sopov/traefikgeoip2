@@ -1,14 +1,31 @@
-// Modified from github.com/IncSW/geoip2 v0.1.1 for github.com/sopov/traefikgeoip2 (MIT, see LICENSE in this directory).
-// Change: b2s copies the bytes instead of using unsafe.Pointer, so the package loads
-// under Traefik's Yaegi interpreter without the useUnsafe setting.
 package geoip2
 
 import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"net"
 	"strconv"
+	"unsafe"
 )
+
+func getNetworkString(ip net.IP, mask uint) string {
+	bitLen := 128
+	for i := range ip {
+		if ip[i] != 0 {
+			if i == 10 {
+				bitLen = 32
+			}
+			break
+		}
+	}
+	cidrMask := net.CIDRMask(int(mask), bitLen)
+	ipNet := net.IPNet{
+		IP:   ip.Mask(cidrMask),
+		Mask: cidrMask,
+	}
+	return ipNet.String()
+}
 
 func readControl(buffer []byte, offset uint) (byte, uint, uint, error) {
 	controlByte := buffer[offset]
@@ -232,7 +249,7 @@ func readStringMapMap(buffer []byte, mapSize uint, offset uint) (map[string]stri
 	var dataType byte
 	var size uint
 	result := map[string]string{}
-	for i := uint(0); i < mapSize; i++ {
+	for range mapSize {
 		key, offset, err = readMapKey(buffer, offset)
 		if err != nil {
 			return nil, 0, err
@@ -301,7 +318,7 @@ func readStringSlice(buffer []byte, sliceSize uint, offset uint) ([]string, uint
 	var err error
 	var value string
 	result := make([]string, sliceSize)
-	for i := uint(0); i < sliceSize; i++ {
+	for i := range sliceSize {
 		value, offset, err = readString(buffer, offset)
 		if err != nil {
 			return nil, 0, err
@@ -368,5 +385,5 @@ func bytesToFloat64(buffer []byte) float64 {
 }
 
 func b2s(value []byte) string {
-	return string(value)
+	return *(*string)(unsafe.Pointer(&value))
 }
